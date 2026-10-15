@@ -100,3 +100,12 @@ Unit tests use a simulated backend and do not download model weights. The librar
 version in `requirements-topics.txt` is separate from the model's GLiNER 2.0
 version. See the [official classification tutorial](https://github.com/fastino-ai/GLiNER2/blob/main/tutorial/1-classification.md)
 for schema and confidence-score details.
+
+An optional real-model smoke test checks the three representative topics above:
+
+```sh
+RUN_GLINER_MODEL_TESTS=1 python -m unittest discover -s tests -p test_topics_model.py -v
+```
+
+These three examples passed with the actual checkpoint during implementation;
+they are smoke checks, not an accuracy benchmark.
