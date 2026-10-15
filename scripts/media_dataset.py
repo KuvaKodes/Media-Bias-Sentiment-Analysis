@@ -116,11 +116,79 @@ def discover(cache):
     return result
 
 
+
+def import_sample(cache, output, accounts, per_outlet=500):
+    discovery = json.loads((cache / 'discovery.json').read_text())
+    if len(accounts) != 5 or len(set(accounts)) != 5 or not {'nytimes', 'foxnews'} <= set(accounts):
+        raise ValueError('Choose five distinct accounts including nytimes and foxnews')
+    selected = []
+    for account in accounts:
+        if discovery['counts'].get(account, 0) <= 500:
+            raise ValueError(f'{account} does not have over 500 unique tweets')
+        unique = {}
+        for row in discovery['matches']:
+            if row['account'] == account:
+                unique.setdefault(row['tweet_id'], row)
+        ranked = sorted(unique.values(), key=lambda row: hashlib.sha256(
+            ('media-sample-v1:' + row['tweet_id']).encode()).hexdigest())
+        selected.extend(ranked[:per_outlet])
+    if len(selected) != len(accounts) * per_outlet:
+        raise ValueError('Insufficient unique tweets for requested sample size')
+    full_cache = cache / 'full_rows'
+    full_cache.mkdir(exist_ok=True)
+    def fetch(match):
+        path = full_cache / (match['tweet_id'] + '.json')
+        if path.exists():
+            response = json.loads(path.read_text())
+        else:
+            params = {'dataset': DATASET, 'config': 'default', 'split': 'train',
+                      'offset': match['global_row'], 'length': 1}
+            response = get_json('https://datasets-server.huggingface.co/rows?' + urllib.parse.urlencode(params))
+            path.write_text(json.dumps(response))
+        if len(response['rows']) != 1 or response['rows'][0]['truncated_cells']:
+            raise RuntimeError('Missing row or truncated cells; refusing incomplete raw data')
+        row = response['rows'][0]['row']
+        url_match = URL_PATTERN.match(row['url'])
+        if not url_match or url_match[1].lower() != match['account'] or url_match[2] != match['tweet_id']:
+            raise RuntimeError('Viewer row does not match pinned Parquet discovery')
+        if str(row['id']) != match['tweet_id']:
+            raise RuntimeError('Tweet ID mismatch')
+        return response['features'], row
+    raw, features = [], None
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for index, (row_features, row) in enumerate(pool.map(lambda x: retry(fetch, x), selected), 1):
+            if features is not None and features != row_features:
+                raise RuntimeError('Inconsistent source schema')
+            features = row_features
+            raw.append(row)
+            if index % 100 == 0: print('IMPORTED', index, '/', len(selected), flush=True)
+    # Restore original scalar types, including exact 64-bit integer tweet IDs.
+    schema = pa.schema([(f['name'], pa.type_for_alias(f['type']['dtype'])) for f in features])
+    table = pa.Table.from_pylist(raw, schema=schema)
+    output.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, output / 'raw_tweets.parquet', compression='zstd')
+    (output / 'selection.json').write_text(json.dumps(selected, indent=2) + '\n')
+    (output / 'source_schema.json').write_text(json.dumps(features, indent=2) + '\n')
+    manifest = {k: discovery[k] for k in ('dataset', 'revision', 'source_revision', 'files', 'rows', 'counts')}
+    manifest.update({'selected_accounts': accounts, 'tweets_per_outlet': per_outlet,
+                     'sample_size': len(raw), 'raw_columns': table.num_columns,
+                     'sampling': 'First occurrence per URL tweet ID; lowest SHA256(media-sample-v1:<tweet_id>) per account',
+                     'raw_sha256': hashlib.sha256((output / 'raw_tweets.parquet').read_bytes()).hexdigest()})
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    print('SAVED', len(raw), 'rows with', table.num_columns, 'columns', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache', required=True, type=Path)
+    parser.add_argument('--import-sample', action='store_true')
+    parser.add_argument('--accounts', nargs=5, default=['nytimes', 'foxnews', 'reuters', 'ap', 'abc'])
+    parser.add_argument('--output', type=Path, default=Path('dataset'))
     args = parser.parse_args()
-    discover(args.cache)
+    if args.import_sample:
+        import_sample(args.cache, args.output, args.accounts)
+    else:
+        discover(args.cache)
 
 
 if __name__ == '__main__': main()
