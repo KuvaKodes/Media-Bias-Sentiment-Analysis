@@ -43,3 +43,60 @@ Scripts are run standalone from within their topic directory (e.g. `python middl
 ## Full Paper
 
 The complete write-up, including background, full methodology, results, and discussion, is available in **`KRV14FinalPaper.pdf`**.
+
+## Optional GLiNER2 Topic Classifier
+
+`topic_classification` assigns one general topic to short English text using
+[`fastino/gliner2-base-v1`](https://huggingface.co/fastino/gliner2-base-v1), the
+GLiNER 2.0 checkpoint. It is independent of the sentiment analysis scripts and
+political-leaning classifier. No training dataset or API key is required.
+
+From the repository root, with Python 3.10+:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-topics.txt
+python -m topic_classification --text "Donald Trump spoke at a rally today."
+python -m topic_classification --file tweet.txt
+cat tweet.txt | python -m topic_classification --stdin
+```
+
+The first classification downloads model weights into Hugging Face's cache;
+subsequent calls reuse them. Inference runs locally on CPU. The module does not
+save or send input text to a hosted inference service. JSON output contains
+`topic`, `confidence`, and `model`. Confidence is the model's score, not a
+calibrated guarantee of correctness.
+
+```python
+from topic_classification import TopicClassifier
+
+classifier = TopicClassifier()  # Reuse for multiple tweets.
+result = classifier.classify("A mass shooting has prompted debate on gun laws.")
+print(result.to_dict())
+```
+
+The default labels are president, gun issues, gender rights, reproductive rights,
+immigration, economy, elections, foreign affairs, healthcare, environment,
+crime and justice, education, race and civil rights, technology, and other.
+Definitions are in `topic_classification/topics.py`. Intended examples include
+Donald Trump → president, mass shootings → gun issues, and transgender rights
+→ gender rights. These guide the model rather than imposing keyword rules.
+Overlapping subjects can receive different labels depending on context; inspect
+representative tweets before relying on labels for research.
+
+To replace the taxonomy, pass a dictionary with at least two label/description
+pairs to `TopicClassifier(topics=...)`, or save that dictionary as a JSON object
+and use `--topics topics.json`. Descriptions help distinguish related categories.
+The classifier selects a single topic; `other` handles subjects outside the
+provided default taxonomy. It rejects blank inputs and passages over 1,000
+characters, and is intended for short tweets rather than whole articles.
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+Unit tests use a simulated backend and do not download model weights. The library
+version in `requirements-topics.txt` is separate from the model's GLiNER 2.0
+version. See the [official classification tutorial](https://github.com/fastino-ai/GLiNER2/blob/main/tutorial/1-classification.md)
+for schema and confidence-score details.
