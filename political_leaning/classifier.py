@@ -65,6 +65,31 @@ class PoliticalLeaningClassifier:
         scores = classifier(
             text, top_k=None, truncation=truncate, max_length=MAX_TOKENS
         )
+        return self._result(scores, count, truncated)
+
+    def grade_many(self, texts, *, truncate=False, batch_size=8):
+        """Grade a batch in input order, reusing the same model."""
+        texts = list(texts)
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError("batch_size must be a positive integer.")
+        if any(not isinstance(text, str) or not text.strip() for text in texts):
+            raise ValueError("Every text must be a non-empty string.")
+        if not texts:
+            return []
+        classifier = self._load()
+        counts = [len(ids) for ids in classifier.tokenizer(
+            texts, add_special_tokens=True, truncation=False)["input_ids"]]
+        if not truncate and any(count > MAX_TOKENS for count in counts):
+            raise ValueError("An input exceeds 512 tokens; shorten it or enable truncation.")
+        outputs = classifier(texts, top_k=None, truncation=truncate,
+                             max_length=MAX_TOKENS, batch_size=batch_size)
+        if len(outputs) != len(texts):
+            raise RuntimeError("Model returned the wrong number of results.")
+        return [self._result(scores, count, count > MAX_TOKENS)
+                for scores, count in zip(outputs, counts)]
+
+    @staticmethod
+    def _result(scores, count, truncated):
         probabilities = {}
         for item in scores:
             label = LABELS.get(item["label"])

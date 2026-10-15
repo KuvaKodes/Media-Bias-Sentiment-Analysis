@@ -22,13 +22,14 @@ class TopicResult:
 class TopicClassifier:
     """Pick one general topic from a configurable label-to-description mapping."""
 
-    def __init__(self, topics=None):
+    def __init__(self, topics=None, device="cpu"):
         topics = DEFAULT_TOPICS if topics is None else topics
         if not isinstance(topics, Mapping) or len(topics) < 2:
             raise ValueError("Provide at least two topics as a label-to-description mapping.")
         if any(not isinstance(k, str) or not k.strip() or
                not isinstance(v, str) or not v.strip() for k, v in topics.items()):
             raise ValueError("Topic labels and descriptions must be non-empty strings.")
+        self.device = device
         self._topics = dict(topics)
         self._model = None
         self._schema = None
@@ -42,6 +43,7 @@ class TopicClassifier:
                     "Install dependencies: python -m pip install -r requirements-topics.txt"
                 ) from exc
             model = AutoExtractor.from_pretrained(MODEL_ID)
+            model.to(self.device)
             model.eval()
             schema = model.create_schema().classification("topic", self._topics)
             self._model, self._schema = model, schema
@@ -53,6 +55,25 @@ class TopicClassifier:
         if len(text) > MAX_CHARACTERS:
             raise ValueError(f"Use a short passage of at most {MAX_CHARACTERS} characters.")
         output = self._load().extract(text, self._schema, include_confidence=True)
+        return self._result(output)
+
+    def classify_many(self, texts, *, batch_size=8):
+        """Classify a batch in input order using the configured taxonomy."""
+        texts = list(texts)
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError("batch_size must be a positive integer.")
+        if any(not isinstance(text, str) or not text.strip() or
+               len(text) > MAX_CHARACTERS for text in texts):
+            raise ValueError("Every text must contain 1 to 1,000 characters and not be blank.")
+        if not texts:
+            return []
+        outputs = self._load().batch_extract(texts, self._schema, batch_size=batch_size,
+                                             include_confidence=True)
+        if len(outputs) != len(texts):
+            raise RuntimeError("Model returned the wrong number of results.")
+        return [self._result(output) for output in outputs]
+
+    def _result(self, output):
         try:
             label = output["topic"]["label"]
             confidence = float(output["topic"]["confidence"])
